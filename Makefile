@@ -168,5 +168,8 @@ angsd: angsd.cpp shared.o bfgs.o multiReader.o printRes.o general.o soap_likes.o
 inbreed: angsd.cpp shared.o bfgs.o multiReader.o printRes.o general.o soap_likes.o gatk_likes.o bam_likes.o bammer_main.o analysisFunction.o bgzf.o analysisMaf.inbreed.o
 	$(CXX) $(FLAGS) angsd.cpp *.o  -lpthread -lz -o angsd_inbreed
 
+test:
+	@echo "angsd: test scripts not implemented yet."
+
 clean:
-	rm  -f *.o angsd *~ angsd_inbreed
+	@rm  -f *.o angsd *~ angsd_inbreed
