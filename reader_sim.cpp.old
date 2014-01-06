@@ -1,0 +1,89 @@
+#include "reader_sim.h"
+
+
+void reader_sim::getOptions(argStruct *arguments){
+  //  fprintf(stderr,"asdf:%p\n",arguments->argumentFile);
+  fname=angsd::getArg("-sim1",fname,arguments);
+  
+  if(strcmp(fname,"-999")==0){
+    printArg(stdout);
+    exit(0);
+  }
+
+  nInd = angsd::getArg("-nInd",nInd,arguments);
+  if(nInd==0){
+    fprintf(stderr,"Must supply -nInd when using simfiles\n");
+    printArg(arguments->argumentFile);
+  }
+  arguments->nInd = nInd;
+  //make dummy header and reverse lookup table
+  arguments->hd = new aHead;
+  arguments->hd->text=NULL;arguments->hd->l_text=0;
+  arguments->hd->n_ref =1;
+  arguments->hd->name = new char*[1]; arguments->hd->name[0]= strdup("dummy1");
+  arguments->hd->l_name = new int[1];arguments->hd->l_name[0]=strlen(arguments->hd->name[0]);
+  arguments->hd->l_ref = new int[1];arguments->hd->l_ref[0] = 300e6;//some random large value, shouldn't be used; DRAGON
+  std::map<char*,int,ltstr> *revMap  =  new   std::map<char*,int,ltstr>;
+  revMap->insert(std::pair<char*,int>(strdup("dummy1"),0));
+  arguments->revMap = revMap;
+
+  
+  printArg(arguments->argumentFile);
+}
+
+
+void reader_sim::init(argStruct *as){
+  nInd =0;
+  getOptions(as);
+  gz = getGz(fname,"r");
+}
+
+void reader_sim::printArg(FILE *argFile){
+  fprintf(argFile,"reader_sim:\n\n");
+  fprintf(argFile,"-sim1\t%s\n",fname);
+  fprintf(argFile,"-nInd\t%d\n",nInd);
+  fprintf(argFile,"\n");
+
+}
+
+
+mr::funkyPars *reader_sim::fetch(int chunkSize){
+
+  mr::funkyPars *r = mr::allocFunkyPars();  
+  r->likes=new double*[chunkSize];
+  r->posi=new int[chunkSize];
+  r->anc = new char[chunkSize];
+  memset(r->anc,0,chunkSize);
+  r->refId = 0;
+  static int pos = 0;
+  int i;
+
+  for(i=0;i<chunkSize;i++){
+    //    fprintf(stderr,"fechgingigngng\n");
+    double *lk = new double [10*nInd];
+    size_t bytesRead = gzread(gz,lk,sizeof(double)*10*nInd);
+    if(bytesRead==0){
+      delete [] lk;
+      break;
+    }else if(bytesRead!=sizeof(double)*10*nInd){
+      fprintf(stderr,"\t-> Error reading full chunk\n");
+      exit(0);
+    }else{ 
+      r->likes[i] = lk;
+      r->posi[i] = i+pos;
+    }
+  }
+  if(i==0){
+    delete [] r->likes;
+    delete [] r->posi;
+    delete [] r->anc;
+    delete r;
+    return NULL;
+  }
+  r->nInd=nInd;
+  r->numSites=i;
+  pos += i;
+  
+  return r;
+}
+

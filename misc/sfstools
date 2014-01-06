@@ -1,0 +1,3 @@
+#!/bin/bash
+
+echo "please use angsd -realSFS 1 -pest mlfile instead of sfstools"

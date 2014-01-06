@@ -1,0 +1,283 @@
+
+color.palette <- function(steps, n.steps.between=NULL, ...){
+ 
+ if(is.null(n.steps.between)) n.steps.between <- rep(0, (length(steps)-1))
+ if(length(n.steps.between) != length(steps)-1) stop("Must have one less n.steps.between value than streadmsps")
+ 
+ fill.steps <- cumsum(rep(1, length(steps))+c(0,n.steps.between))
+ RGB <- matrix(NA, nrow=3, ncol=fill.steps[length(fill.steps)])
+ RGB[,fill.steps] <- col2rgb(steps)
+ 
+ for(i in which(n.steps.between>0)){
+  col.start=RGB[,fill.steps[i]]
+  col.end=RGB[,fill.steps[i+1]]
+  for(j in seq(3)){
+   vals <- seq(col.start[j], col.end[j], length.out=n.steps.between[i]+2)[2:(2+n.steps.between[i]-1)]  
+   RGB[j,(fill.steps[i]+1):(fill.steps[i+1]-1)] <- vals
+  }
+ }
+ 
+ new.steps <- rgb(RGB[1,], RGB[2,], RGB[3,], maxColorValue = 255)
+ pal <- colorRampPalette(new.steps, ...)
+ return(pal)
+}
+
+
+
+plooot<-function(sfs.2d,...){
+x<-sfs.2d
+x[x==0]<-NA
+vek<-c(0,rev(1/c(1,2,5,10,25,100,250,sort(c(10^(3:6),2.5*10^(3:6))))))
+vek<-vek[1:which.max(max(x,na.rm=T)<vek)]
+v<-length(vek)
+for(tal in 1:v)
+  x[sfs.2d>vek[tal]]<-v-tal
+colnames(x)<-1:nrow(x)
+rownames(x)<-1:nrow(x)
+
+pal <- color.palette(c("darkgreen","#00A600FF","yellow","#E9BD3AFF","orange","red4","darkred","black"), space="rgb")
+#tck<-list(at = c(1, 50, 100), labels = c("0", "0.5", "1"))
+lattice::levelplot(x,region=T,colorkey=list(at=1:v+1,label=list(at=1:v+1,lab=as.character(rev(vek)))),col.regions=rev(pal(v+2)),cut=v,xlab="pop 1",ylab="pop 2",...)
+
+}
+
+
+
+
+lik1 <- function(sfs=NULL,gl){
+  if(missing(sfs))
+    sfs <- rep(1/nrow(gl),nrow(gl))
+  else if(length(sfs)!=nrow(gl))
+    stop("Problem with dimension")
+  sum(log(colSums(sfs*gl)))  
+}
+
+em1 <- function(sfs=NULL,gl,tole=1e-6,maxIter=100){
+  if(missing(sfs))
+    sfs <- rep(1/nrow(gl),nrow(gl))
+  else if(length(sfs)!=nrow(gl))
+    stop("Problem with dimension")
+  
+  retLik <- lik1(sfs,gl=gl)
+
+
+  
+  for(i in 1:maxIter){
+    sfs <- rowMeans(apply(sfs*gl,2,norm))
+    lik <- lik1(sfs,gl)
+#    cat("diff: ",abs(lik-retLik),"\n")
+    if(abs(lik-retLik)<tole){
+      break;
+    }
+    retLik <- lik
+  #  print(retLik)
+  }
+
+  return(sfs)
+}
+
+theEm1<-function(sfs,gl)
+  rowMeans(apply(sfs*gl,2,norm))
+
+lik2 <- function(sfs=NULL,gl1,gl2){
+  if(missing(sfs))
+    sfs <- matrix(rep(1/(nrow(gl1)*nrow(gl2)),nrow(gl1)*nrow(gl2)),nrow=nrow(gl1))
+  else if(nrow(sfs)!=nrow(gl1)||ncol(sfs)!=nrow(gl2)||ncol(gl1)!=ncol(gl2))
+    stop("Problem with dimension")
+
+  l <- rep(NA,ncol(gl1))
+  for(s in 1:ncol(gl1)){
+    l[s] <- log(sum(sfs*gl1[,s] %*% t(gl2[,s])))
+  }
+  sum(l)
+}
+lik22 <- function(sfs=NULL,gl1,gl2){
+  sfs<-norm(sfs)
+  dim(sfs)<-c(nrow(gl1),nrow(gl2))
+  if(missing(sfs))
+    sfs <- matrix(rep(1/(nrow(gl1)*nrow(gl2)),nrow(gl1)*nrow(gl2)),nrow=nrow(gl1))
+  else if(nrow(sfs)!=nrow(gl1)||ncol(sfs)!=nrow(gl2)||ncol(gl1)!=ncol(gl2))
+    stop("Problem with dimension")
+
+  l <- rep(NA,ncol(gl1))
+  for(s in 1:ncol(gl1)){
+    l[s] <- log(sum(sfs*gl1[,s] %*% t(gl2[,s])))
+  }
+  sum(l)
+}
+
+em2 <- function(sfs=NULL,gl1,gl2,tole=1e-6,maxIter=500){
+  if(missing(sfs)){
+    print("generating flat start SFS")
+    sfs <- matrix(rep(1/(nrow(gl1)*nrow(gl2)),nrow(gl1)*nrow(gl2)),nrow=nrow(gl1))
+  }else if(nrow(sfs)!=nrow(gl1)||ncol(sfs)!=nrow(gl2)||ncol(gl1)!=ncol(gl2))
+    stop("Problem with dimension")
+
+  
+  retLik <- lik2(sfs,gl1=gl1,gl2=gl2)
+
+  
+  
+  for(i in 1:maxIter) {
+    tmpRes <- matrix(rep(0,nrow(gl1)*nrow(gl2)),nrow=nrow(gl1))  
+    for(s in 1:ncol(gl1))
+      tmpRes <- tmpRes+norm(sfs*(gl1[,s] %*% t(gl2[,s])))
+    sfs <- norm(tmpRes)
+    lik <- lik2(sfs,gl1,gl2)
+##    if(!(i%%10 ))
+##      cat("i:",i,"lik: ",lik,"diff: ",abs(lik-retLik),"\n")
+    if(abs(lik-retLik)<tole){
+      cat("breaking at: ",i)
+      print(abs(lik-retLik))
+      break;
+    }
+ 
+    retLik <- lik
+    
+  }
+  
+  return(sfs)
+}
+
+theEm2<-function(sfs,gl1,gl2){
+  if(any(sfs<0))
+    stop("SFS is negative")
+  if(any(sfs>1))
+    stop("SFS is >1")
+  tmpRes <- matrix(rep(0,nrow(gl1)*nrow(gl2)),nrow=nrow(gl1))  
+  for(s in 1:ncol(gl1))
+    tmpRes <- tmpRes+norm(sfs*(gl1[,s] %*% t(gl2[,s])))
+
+  ret <- as.vector(norm(tmpRes))
+  if(any(ret<0))
+    stop("ret SFS is negative")
+  if(any(ret>1))
+    stop("ret SFS is >1")
+  return(ret)
+}
+
+if(FALSE){
+  #DO RUN
+ source("/home/thorfinn/.Rprofile")
+setwd("/home/thorfinn/2dsfs/")
+ source("/home/albrecht/funkySFSand.R")
+
+ gl1 <- exp(t(readBjoint("pop1.sfs",10,1e6)))
+ gl2 <- exp(t(readBjoint("pop2.sfs",10,1e6)))
+ ##all <- exp(t(readBjoint("all.sfs",20,1e6)))
+ 
+ sfs.p1 <- em1(gl=gl1,maxIter=1e2)
+ sfs.p2 <- em1(gl=gl2,maxIter=1e2)
+ sfs.2d<-em2(gl1=gl1,gl2=gl2,maxIter=1e2)
+ barplot(rbind(apply(sfs.2d,1,sum),sfs.p1,apply(sfs.2d,2,sum),sfs.p2),beside=T)
+ library(SQUAREM)
+
+ system.time(sq<-squarem(norm(runif(21)),theEm1,gl=gl1,control=list(tol=1e-6)))
+ system.time(sqq<-squarem(norm(runif(21)),theEm1,gl=gl2,control=list(tol=1e-6)))
+ system.time(sfs.p1 <- em1(gl=gl1,maxIter=1e2))
+ barplot(rbind(sq$par,sfs.p1))
+ system.time(sq2<-squarem(norm(runif(21*21)),theEm2,gl1=gl1,gl2=gl2,control=list(tol=1e-6)))
+ system.time(sfs.2d<-em2(gl1=gl1,gl2=gl2,maxIter=1e2))
+ lik2(sfs.2d,gl1,gl2)
+ lik2(matrix(sq2$par,21),gl1,gl2)
+ plooot(sfs.2d)
+ plooot(matrix(sq2$par,21))
+ barplot(rbind(apply(matrix(sq2$par,21),1,sum),sq$par,apply(matrix(sq2$par,21),2,sum),sqq$par),beside=T)
+
+}
+
+
+
+
+
+
+
+if(FALSE){
+  ##generate data DONT RUN
+  nRep <- 100
+  nPop1 <- 24
+  nPop2 <- 16
+  cmd <- paste("msms -ms",nPop1+nPop2,nRep,"-t 930 -r 400 -I 2",nPop1,nPop2,"0 -g 1 9.70406 -n 1 2 -n 2 1 -ma x 0.0 0.0 x -ej 0.07142857 2 1  >msoutput.txt ",sep=" ")
+  system(cmd)
+  ##system("msms -ms 40 1 -t 930 -r 400 -I 2 20 20 0 -g 1 9.70406 -n 1 2 -n 2 1 -ma x 0.0 0.0 x -ej 0.07142857 2 1  >msoutput.txt  ")
+  
+  source("readms.output.R")
+
+  a<- read.ms.output(file="msoutput.txt")
+
+  p1.d <- unlist((sapply(a$gam,function(x) colSums(x[1:nPop1,]))))
+  p2.d <- unlist((sapply(a$gam,function(x) colSums(x[-c(1:nPop1),]))))
+  barplot(table(p1.d))
+
+  sfs.2d <- sapply(0:nPop1,function(x) table(factor(p2.d[p1.d==x],levels=0:nPop2)))
+
+  pdf("sfsstart.pdf")
+  heatmap(sfs.2d)
+  barplot(norm(table(p1.d)))
+  barplot(norm(table(p2.d)))
+  dev.off()
+
+}
+
+
+
+
+
+if(FALSE){
+  ##generate data DONT RUN
+  nRep <- 10
+  nPop1 <- 24
+  nPop2 <- 16
+  cmd <- paste("msms -ms",nPop1+nPop2,nRep,"-t 930 -r 400 -I 2",nPop1,nPop2,"0 -g 1 9.70406 -n 1 2 -n 2 1 -ma x 0.0 0.0 x -ej 0.07142857 2 1  >msoutput.txt ",sep=" ")
+  system(cmd)
+  ##system("msms -ms 40 1 -t 930 -r 400 -I 2 20 20 0 -g 1 9.70406 -n 1 2 -n 2 1 -ma x 0.0 0.0 x -ej 0.07142857 2 1  >msoutput.txt  ")
+  
+  source("readms.output.R")
+
+  a<- read.ms.output(file="msoutput.txt")
+
+  p1.d <- unlist((sapply(a$gam,function(x) colSums(x[1:nPop1,]))))
+  p2.d <- unlist((sapply(a$gam,function(x) colSums(x[-c(1:nPop1),]))))
+  par(mfrow=c(1,2))
+  barplot(table(p1.d))
+  barplot(table(p2.d))
+  
+  sfs.2d <- sapply(0:nPop1,function(x) table(factor(p2.d[p1.d==x],levels=0:nPop2)))
+
+  ##begin cmdline
+  system("./msToGlf6 -in msoutput.txt -out raw -singleOut 1 -regLen 0 -depth 8 -err 0.005")
+  system("./angsd0.540/angsd -sim1 raw.glf.gz -nInd 20 -realSFS 1 -out rawa -from 0 -to 11 -nThreads 20")
+  system("./angsd0.540/angsd -sim1 raw.glf.gz -nInd 20 -realSFS 1 -out rawb -from 12 -to 19 -nThreads 20")
+  system("./2dsfs14_thd rawa rawb 24 16 -tole 1e-6  -P 10 -maxIter 500 >resVars")
+
+
+  tsk1 <- norm(exp(t(read.table("resVars"))))
+  range(norm(sfs.2d)-tsk1)
+  ##[1] -0.0005869855  0.0005790802
+
+  barplot(rbind(rowSums(norm(sfs.2d)),rowSums(tsk1)))
+  barplot(rbind(colSums(norm(sfs.2d)),colSums(tsk1)))
+  
+
+  system("./msToGlf6 -in msoutput.txt -out rawInvar -singleOut 1 -regLen 1000000 -depth 8 -err 0.005")
+  system("./angsd0.540/angsd -sim1 rawInvar.glf.gz -nInd 20 -realSFS 1 -out rawaInvar -from 0 -to 11 -nThreads 20")
+  system("./angsd0.540/angsd -sim1 rawInvar.glf.gz -nInd 20 -realSFS 1 -out rawbInvar -from 12 -to 19 -nThreads 20")
+  system("./2dsfs14_thd rawaInvar rawbInvar 24 16 -tole 1e-6  -P 24 -maxIter 500 >resInVars")##tolerence achieved after 180 iterations
+
+  tsk1 <- norm(exp(t(read.table("resInVars"))))
+  range(norm(sfs.2d[-1,-1])-norm(tsk2[-1,-1]))
+  ##[1] -0.0008945658  0.0106200507
+
+  barplot(rbind(rowSums(norm(sfs.2d[-1,-1])),rowSums(norm(tsk2[-1,-1]))))
+  barplot(rbind(colSums(norm(sfs.2d[-1,-1])),colSums(norm(tsk2[-1,-1]))))
+
+  
+  
+  pdf("sfsstart.pdf")
+  heatmap(sfs.2d)
+  barplot(norm(table(p1.d)))
+  barplot(norm(table(p2.d)))
+  dev.off()
+
+}
+
