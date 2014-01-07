@@ -1,9 +1,9 @@
-B1;2cCC=gcc
+CC=gcc
 CXX=g++
 
 FLAGS=-O3
 
-all: angsd misc
+all: inbreed misc
 
 .PHONY: misc
 
@@ -166,7 +166,7 @@ angsd: angsd.cpp shared.o bfgs.o multiReader.o printRes.o general.o soap_likes.o
 	$(CXX) $(FLAGS) angsd.cpp *.o  -lpthread -lz -o angsd
 
 inbreed: angsd.cpp shared.o bfgs.o multiReader.o printRes.o general.o soap_likes.o gatk_likes.o bam_likes.o bammer_main.o analysisFunction.o bgzf.o analysisMaf.inbreed.o
-	$(CXX) $(FLAGS) angsd.cpp *.o  -lpthread -lz -o angsd_inbreed
+	$(CXX) $(FLAGS) angsd.cpp *.o  -lpthread -lz -o angsd
 
 test:
 	@echo "angsd: test scripts not implemented yet."

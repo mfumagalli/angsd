@@ -6,4 +6,4 @@ ANGSD is a software for analyzing next generation sequencing data. The software 
 
 ---
 
-This is a non-official repo for ANGSD!!! If you are looking for the latest updates or version, please check the official webpage [here](http://popgen.dk/angsd/index.php/Main_Page).
+This is a non-official repo of ANGSD! If you are looking for the latest updates or version, please check the official webpage [here](http://popgen.dk/angsd/index.php/Main_Page). This version has slight changes in the Makefile so that, by default, the inbreeding version is compliled.

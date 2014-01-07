@@ -12,7 +12,6 @@
 #include "kstring.h"//<-used for buffered output
 #include "analysisMaf.h"
 
-
 typedef struct{
   int major;
   double *loglikes;
@@ -53,7 +52,7 @@ double phatFun(suint *counts,int nFiles,double eps,char major,char minor) {
 }
 
 //simple phat estimator will loop over all sites in the pars
-double phatLoop(funkyPars *pars,double eps,double nInd){
+void phatLoop(funkyPars *pars,double eps,double nInd){
   pars->phat = new double[pars->numSites];
   for(int s=0;s<pars->numSites;s++)
     if(pars->keepSites)
@@ -67,21 +66,23 @@ void frequency::printArg(FILE *argFile){
   fprintf(argFile,"\t2: EM frequency (known major minor)\n");
   fprintf(argFile,"\t4: BFGS frequency (unknown major minor)\n");
   fprintf(argFile,"\t8: EM frequency (unknown major minor)\n");
-  fprintf(argFile,"\t16: frequency from genotype probabilities\n");
-  fprintf(argFile,"\t32: alleleCounts based method (known major minor)\n");
+  fprintf(argFile,"\t16: Frequency from genotype probabilities\n");
+  fprintf(argFile,"\t32: AlleleCounts based method (known major minor)\n");
   fprintf(argFile,"\t-doSNP\t%d\n",doSNP);
   fprintf(argFile,"\t-minMaf\t%f %d\n",minMaf,filtMaf);
   fprintf(argFile,"\t-minLRT\t%f %d\n",minLRT,filtLrt);
   fprintf(argFile,"\t-ref\t%s\n",refName);
   fprintf(argFile,"\t-anc\t%s\n",ancName);
-  fprintf(argFile,"\t-doZ\t%d\n",doZ);
   fprintf(argFile,"\t-eps\t%f [Only used for -doMaf &32]\n",eps);
-  fprintf(argFile,"\t-indFname\t%s (file containing individual inbreedcoeficients)\n",indFName);
+  fprintf(argFile,"-doPost\t%d\t(Calculate posterior prob 3xgprob)\n",doPost);
+  fprintf(argFile,"\t1: Using frequency as prior\n");
+  fprintf(argFile,"\t2: Using uniform prior\n");
+  fprintf(argFile,"-beagleProb\t%d (Dump beagle style postprobs)\n",beagleProb);
   fprintf(argFile,"NB these frequency estimators requires major/minor -doMajorMinor\n");
+  fprintf(argFile,"\t-indFname\t%s (file containing individual inbreedcoeficients)\n",indFName);
   fprintf(argFile,"\n");
 
 }
-
 
 //fancy little function
 int isPowerOfTwo (unsigned int x)
@@ -99,18 +100,19 @@ void frequency::getOptions(argStruct *arguments){
     inputIsBeagle =1;
 
   doMaf=angsd::getArg("-doMaf",doMaf,arguments);
-  doZ=angsd::getArg("-doZ",doZ,arguments);
+  doPost=angsd::getArg("-doPost",doPost,arguments);
   GL=angsd::getArg("-GL",GL,arguments);
   doSNP=angsd::getArg("-doSNP",doSNP,arguments);
   doMajorMinor=angsd::getArg("-doMajorMinor",doMajorMinor,arguments);
-  doPost=angsd::getArg("-doPost",doPost,arguments);
 
+  if(doMaf==0)
+    return;
   double tmp=-1;
   tmp=angsd::getArg("-minMaf",tmp,arguments);
   if(tmp!=-1){
     filtMaf=1;
     assert(tmp<=1||tmp>=0);
-    minMaf = tmp;
+    minMaf = tmp; 
   }
   tmp=-1;
   tmp=angsd::getArg("-minLRT",tmp,arguments);
@@ -155,16 +157,17 @@ void frequency::getOptions(argStruct *arguments){
   int doCounts =0;
   doCounts=angsd::getArg("-doCounts",doCounts,arguments);
 
+  beagleProb=angsd::getArg("-beagleProb",beagleProb,arguments);
 
-  if(doMaf==0)
+  if(doMaf==0 &&doPost==0)
     return;
   if(inputtype!=5&&inputtype!=0&&doMajorMinor==0){
-    fprintf(stderr,"Error: you need to specify doMajorMinor in order to doMaf\n");
+    fprintf(stderr,"You must specify \'-doMajorMinor\' to infer major/minor \n");
     exit(0);
   }
 
   if(inputtype==5&&doMaf!=16){
-    fprintf(stderr,"Error: Only doMaf=16 can be performed on posterior input\n");
+    fprintf(stderr,"Only \'-doMaf 16\' can be performed on posterior input\n");
     exit(0);
   }
   if((inputtype==0 || inputtype==6 || inputtype==7)&&GL==0){
@@ -187,21 +190,29 @@ void frequency::getOptions(argStruct *arguments){
     fprintf(stderr,"Must supply -doCounts for MAF estimator based on counts\n");
     exit(0);
   }
+  if(beagleProb && doPost==0){
+    fprintf(stderr,"Must supply -doPost 1 to write beaglestyle postprobs\n");
+    exit(0);
+  }
 
-
+  if(doPost!=0 && doMajorMinor==0){
+    fprintf(stderr,"Do post requires major and minor: supply -doMajorMinor \n");
+    exit(0);
+  }
 }
 
 //constructor
 frequency::frequency(const char *outfiles,argStruct *arguments,int inputtype){
   inputIsBeagle =0;
-  
+  beagleProb = 0; //<-output for beagleprobs
   filtLrt=filtMaf =0;
   minMaf =0.01;
   minLRT =24;
   nInd = arguments->nInd;
   eps = 0.001;
-  doZ =0;
-  outfile = Z_NULL;
+  outfileZ2 = Z_NULL;
+  outfileZ = Z_NULL;
+    
   doMaf=0;
   GL=0;
   doSNP=0;
@@ -214,12 +225,13 @@ frequency::frequency(const char *outfiles,argStruct *arguments,int inputtype){
   EM_START = 0.001;
 
   if(arguments->argc==2){
-    if(!strcmp(arguments->argv[1],"-doMaf")){
+    if(!strcmp(arguments->argv[1],"-doMaf")||!strcmp(arguments->argv[1],"-doPost")){
       printArg(stdout);
       exit(0);
     }else
       return;
   }
+
 
 
   
@@ -229,12 +241,11 @@ frequency::frequency(const char *outfiles,argStruct *arguments,int inputtype){
     return;
   //make output files
   const char* postfix;
-  if(doZ==1){
-    postfix=".mafs.gz";
-    outfileZ = openFileGz(outfiles,postfix,"w6h");
-  }else{
-    postfix=".mafs";
-    outfile = openFile(outfiles,postfix);
+  postfix=".mafs.gz";
+  outfileZ = aio::openFileGz(outfiles,postfix,GZOPT);
+  if(beagleProb){
+    postfix=".beagle.gprobs.gz";
+    outfileZ2 = aio::openFileGz(outfiles,postfix,GZOPT);
   }
   //print header
   kstring_t bufstr;
@@ -269,96 +280,121 @@ frequency::frequency(const char *outfiles,argStruct *arguments,int inputtype){
       kputs("pu-EM\t",&bufstr);
   }
   kputs("nInd\n",&bufstr);
-  if(doZ==1)
-    gzwrite(outfileZ,bufstr.s,bufstr.l);
-  else
-    fprintf(outfile,"%s",bufstr.s);
+  gzwrite(outfileZ,bufstr.s,bufstr.l);
+  bufstr.l=0;
+  if(beagleProb){
+    kputs("marker\tallele1\tallele2",&bufstr);
+    for(int i=0;i<arguments->nInd;i++){
+      kputs("\tInd",&bufstr);
+      kputw(i,&bufstr);
+      kputs("\tInd",&bufstr);
+      kputw(i,&bufstr);
+      kputs("\tInd",&bufstr);
+      kputw(i,&bufstr);
+    }
+    kputc('\n',&bufstr);
+    gzwrite(outfileZ2,bufstr.s,bufstr.l);
+  }
+
   free(bufstr.s);
 }
 
-//destructor
+
 frequency::~frequency(){
-  if(doMaf==0)
-    return;
-
-  if(doZ==1)
-    gzclose(outfileZ);
-  else
-    fclose(outfile);
-
-  delete [] indF;
+  if(outfileZ!=Z_NULL)     gzclose(outfileZ);
+  if(outfileZ2!=Z_NULL)    gzclose(outfileZ2);
+  free(refName);
+  free(ancName);
 }
-
-
-
-void frequency::prepPrint(funkyPars *pars){
-  kstring_t *bufstr = new kstring_t ;
-  bufstr->s=NULL; bufstr->l=bufstr->m=0;
-
-
-  for(int s=0;s<pars->numSites;s++) {
-    if(pars->keepSites[s]==0)
-      continue;
-    //plugin chr,pos,major,minor
-    kputs(header->name[pars->refId],bufstr);kputc('\t',bufstr);
-    kputw(pars->posi[s]+1,bufstr);kputc('\t',bufstr);
-    kputc(intToRef[pars->major[s]],bufstr);kputc('\t',bufstr);
-    kputc(intToRef[pars->minor[s]],bufstr);kputc('\t',bufstr);
-
-
-    //plugin ref, anc if exists
-    if(pars->ref!=NULL)
-      {kputc(intToRef[pars->ref[s]],bufstr);kputc('\t',bufstr);}
-    if(pars->anc!=NULL)
-      {kputc(intToRef[pars->anc[s]],bufstr);kputc('\t',bufstr);}
-
-    
-    
-    if(doMaf &1)
-      ksprintf(bufstr,"%f\t",pars->results->freq->pml[s]);
-    if(doMaf &2)
-      ksprintf(bufstr,"%f\t",pars->results->freq->pEM[s]);
-    if(doMaf &4)
-      ksprintf(bufstr,"%f\t",pars->results->freq->pmlun[s]);
-    if(doMaf &8)
-      ksprintf(bufstr,"%f\t",pars->results->freq->pEMun[s]);
-    if(doMaf &16)
-      ksprintf(bufstr,"%f\t",pars->results->asso->freq[s]);
-    if(doMaf &32)
-      ksprintf(bufstr,"%f\t",pars->phat[s]);
-
-
-    if(doSNP){
-      if(doMaf &1)
-	ksprintf(bufstr,"%f\t",pars->results->freq->pmlSNP[s]);
-      if(doMaf &2)
-	ksprintf(bufstr,"%f\t",pars->results->freq->pEMSNP[s]);
-      if(doMaf &4)
-	ksprintf(bufstr,"%f\t",pars->results->freq->pmlunSNP[s]);
-      if(doMaf &8)
-	ksprintf(bufstr,"%f\t",pars->results->freq->pEMunSNP[s]);
-    }
-
-    kputw(pars->keepSites[s],bufstr);kputc('\n',bufstr);
-  }
-
-  pars->extras[index] = bufstr;
-}
-
 
 
 
 void frequency::print(funkyPars *pars) {
   if(doMaf==0)
     return;
-  kstring_t *bufstr = (kstring_t *)pars->extras[index];
-  if(doZ)
-    gzwrite(outfileZ,bufstr->s,bufstr->l);  
-  else if(bufstr->s!=0)
-    fprintf(outfile,"%s",bufstr->s);
-  free(bufstr->s);
-  delete bufstr;
+  kstring_t bufstr;
+  bufstr.s=NULL; bufstr.l=bufstr.m=0;
 
+  freqStruct *freq =(freqStruct *) pars->extras[index];
+
+  for(int s=0;s<pars->numSites;s++) {
+    if(pars->keepSites[s]==0)
+      continue;
+    //plugin chr,pos,major,minor
+    kputs(header->name[pars->refId],&bufstr);kputc('\t',&bufstr);
+    kputw(pars->posi[s]+1,&bufstr);kputc('\t',&bufstr);
+    kputc(intToRef[pars->major[s]],&bufstr);kputc('\t',&bufstr);
+    kputc(intToRef[pars->minor[s]],&bufstr);kputc('\t',&bufstr);
+
+
+    //plugin ref, anc if exists
+    if(pars->ref!=NULL)
+      {kputc(intToRef[pars->ref[s]],&bufstr);kputc('\t',&bufstr);}
+    if(pars->anc!=NULL)
+      {kputc(intToRef[pars->anc[s]],&bufstr);kputc('\t',&bufstr);}
+
+    
+    
+    if(doMaf &1)
+      ksprintf(&bufstr,"%f\t",freq->pml[s]);
+    if(doMaf &2)
+      ksprintf(&bufstr,"%f\t",freq->pEM[s]);
+    if(doMaf &4)
+      ksprintf(&bufstr,"%f\t",freq->pmlun[s]);
+    if(doMaf &8)
+      ksprintf(&bufstr,"%f\t",freq->pEMun[s]);
+    if(doMaf &16)
+      ksprintf(&bufstr,"%f\t",freq->freq[s]);
+    if(doMaf &32)
+      ksprintf(&bufstr,"%f\t",pars->phat[s]);
+
+
+    if(doSNP){
+      if(doMaf &1)
+	ksprintf(&bufstr,"%f\t",freq->pmlSNP[s]);
+      if(doMaf &2)
+	ksprintf(&bufstr,"%f\t",freq->pEMSNP[s]);
+      if(doMaf &4)
+	ksprintf(&bufstr,"%f\t",freq->pmlunSNP[s]);
+      if(doMaf &8)
+	ksprintf(&bufstr,"%f\t",freq->pEMunSNP[s]);
+    }
+
+    kputw(pars->keepSites[s],&bufstr);kputc('\n',&bufstr);
+  }
+
+  gzwrite(outfileZ,bufstr.s,bufstr.l);  
+  bufstr.l=0;
+
+  if(beagleProb){
+    //beagle format
+    for(int s=0;s<pars->numSites;s++) {
+      
+      if(pars->keepSites[s]==0)
+	continue;
+      //	fprintf(stderr,"keepsites=%d\n",pars->keepSites[s]);
+      kputs(header->name[pars->refId],&bufstr);
+      kputc('_',&bufstr);
+      kputw(pars->posi[s]+1,&bufstr);
+      kputc('\t',&bufstr);
+      kputw(pars->major[s],&bufstr);
+      kputc('\t',&bufstr);
+      kputw(pars->minor[s],&bufstr);
+
+      int major = pars->major[s];
+      int minor = pars->minor[s];
+      assert(major!=4&&minor!=4);
+	
+      for(int i=0;i<3*pars->nInd;i++) {
+	ksprintf(&bufstr, "\t%f",pars->post[s][i]);
+      }
+      
+      kputc('\n',&bufstr);
+      gzwrite(outfileZ2,bufstr.s,bufstr.l);
+    }
+    
+  }
+  free(bufstr.s);
 }
 
 
@@ -367,46 +403,66 @@ void frequency::clean(funkyPars *pars) {
   if(doMaf==0)
     return;
 
+  freqStruct *freq =(freqStruct *) pars->extras[index];
 
   //cleaning
-  delete [] pars->results->asso->freq;
-  delete [] pars->results->asso->lrt_snp;//maybe in doSNP
-  delete [] pars->results->freq->pml;
-  delete [] pars->results->freq->pmlun;
-  delete [] pars->results->freq->pEM;
-  delete [] pars->results->freq->pEMun;
-  if(doSNP){
-    delete [] pars->results->freq->pmlSNP;
-    delete [] pars->results->freq->pmlunSNP;
-    delete [] pars->results->freq->pEMSNP;
-    delete [] pars->results->freq->pEMunSNP;
-  }
+  delete [] freq->freq;
+  delete [] freq->lrt_snp;//maybe in doSNP
+  delete [] freq->pml;
+  delete [] freq->pmlun;
+  delete [] freq->pEM;
+  delete [] freq->pEMun;
+  delete [] freq->pmlSNP;
+  delete [] freq->pmlunSNP;
+  delete [] freq->pEMSNP;
+  delete [] freq->pEMunSNP;
+  delete freq;
 
+  
   if(pars->post!=NULL){
     for(int i=0;i<pars->numSites;i++)
       delete [] pars->post[i];
     delete [] pars->post;
   }
 
+
 }
 
+freqStruct *allocFreqStruct(){
+  freqStruct *freq = new freqStruct;
+  
+ freq->pml=NULL;
+ freq->pmlun= NULL;
+ freq->pEM=NULL;
+ freq->pEMun=NULL;
+ freq->pmlSNP = NULL;
+ freq->pmlunSNP = NULL;
+ freq->pEMSNP = NULL;
+ freq->pEMunSNP = NULL;
+ freq->freq = NULL;
+ freq->lrt_snp = NULL;
+ return freq;
+}
 
 void frequency::run(funkyPars *pars) {
  
-  if(doMaf==0)
+  if(doMaf==0&&doPost==0)
     return;
+  freqStruct *freq = allocFreqStruct();
+  pars->extras[index] = freq;
+
   if(doMaf!=0) {
 
     if(doMaf&32)
       phatLoop(pars,eps,nInd);
     
     if(doMaf&16)
-      postFreq(pars);
+      postFreq(pars,freq);
     if(doMaf % 16){
-      likeFreq(pars);
+      likeFreq(pars,freq);
     }
     
-    if(pars->results->asso->freq==NULL){
+    if(freq->freq==NULL){
       fprintf(stderr,"%s:Frequency not initilized\n",__FUNCTION__);
       exit(1);
     }
@@ -417,19 +473,19 @@ void frequency::run(funkyPars *pars) {
 	continue;
 
       if(filtMaf==1){
-	if(pars->results->asso->freq[s] < minMaf)
+	if(freq->freq[s] < minMaf)
 	  pars->keepSites[s]=0;
-	else if(pars->results->asso->freq[s] > 1 - minMaf)
+	else if(freq->freq[s] > 1 - minMaf)
 	  pars->keepSites[s]=0;
       }
-      if(filtLrt==1 && (doSNP&&(pars->results->asso->lrt_snp[s] < minLRT)))
+      if(filtLrt==1 && (doSNP&&(freq->lrt_snp[s] < minLRT)))
       	pars->keepSites[s]=0;
 
     }
   }
   if(doPost){
     if(pars->likes==NULL){
-      fprintf(stderr,"[%s] likelihoods missing\n",__FUNCTION__);
+      fprintf(stderr,"[%s.%s()] likelihoods missing\n",__FILE__,__FUNCTION__);
       exit(0);
     }
     double **post = new double*[pars->numSites];
@@ -440,13 +496,13 @@ void frequency::run(funkyPars *pars) {
       if(pars->keepSites[s]==0){
 	delete [] like[s];
 	continue;
-      }if(doPost==1){//maf prior
-	double freq=pars->results->asso->freq[s];
+      }if(doPost==1) {//maf prior
+	double freqEst=freq->freq[s];
 	for(int i=0;i<pars->nInd;i++){
 	  //	  fprintf(stderr,"[%d]\nlik= %f %f %f\n",i,like[0][i*3+0],like[0][i*3+1],like[0][i*3+2]);
-	  post[s][i*3+2]=like[s][i*3+2]+2*log(freq);
-	  post[s][i*3+1]=like[s][i*3+1]+log(2)+log(1-freq)+log(freq);
-	  post[s][i*3+0]=like[s][i*3+0]+2*log(1-freq);
+	  post[s][i*3+2]=like[s][i*3+2] + log(pow(1-freqEst,2) + (1-freqEst)*freqEst*indF[i]);
+	  post[s][i*3+1]=like[s][i*3+1] + log(2*(1-freqEst)*freqEst - 2*(1-freqEst)*freqEst*indF[i]);
+	  post[s][i*3+0]=like[s][i*3+0] + log(pow(freqEst,2) + (1-freqEst)*freqEst*indF[i]);
 	  //	  fprintf(stderr,"likmod= %f %f %f\n",post[0][i*3+0],post[0][i*3+1],post[0][i*3+2]);
 	  double norm = angsd::addProtect3(post[s][i*3+0],post[s][i*3+1],post[s][i*3+2]);
 	  post[s][i*3+0]=exp(post[s][i*3+0]-norm);
@@ -477,28 +533,29 @@ void frequency::run(funkyPars *pars) {
     delete[] like;
    
   }
-   prepPrint(pars);
+  
 }
 
 
 /*
 Estimate the allele frequency from the posterior probabilities and add them to funkyPars
 */
-void frequency::postFreq(funkyPars  *pars){
+void frequency::postFreq(funkyPars  *pars,freqStruct *freq){
   double *returnFreq = new double[pars->numSites]; 
 
-    for(int s=0;s<pars->numSites;s++){
-      returnFreq[s]=0;
-      for(int i=0;i<pars->nInd;i++){
-	returnFreq[s]+=pars->post[s][i*3+1]+2*pars->post[s][i*3+2];
-      }
+  for(int s=0;s<pars->numSites;s++){
+    returnFreq[s]=0;
+    for(int i=0;i<pars->nInd;i++){
+      returnFreq[s]+=pars->post[s][i*3+1]+2*pars->post[s][i*3+2];
+    }
     returnFreq[s] = returnFreq[s]/(pars->nInd*2);
     //fprintf(stderr,"returnfreq %f\n",returnFreq[s]);
-    }
-    pars->results->asso->freq=returnFreq;
+  }
+  freq->freq=returnFreq;
 }
 
-void frequency::likeFreq(funkyPars *pars){//method=1: bfgs_known ;method=2 em;method=4 bfgs_unknown
+
+void frequency::likeFreq(funkyPars *pars,freqStruct *freq){//method=1: bfgs_known ;method=2 em;method=4 bfgs_unknown
 
   //here only the likelihoods for the three genotypes are used. 
   double **loglike = NULL;
@@ -598,14 +655,14 @@ void frequency::likeFreq(funkyPars *pars){//method=1: bfgs_known ;method=2 em;me
   }
 
 
-  pars->results->freq->pml=pml;
-  pars->results->freq->pEM=pEM;
-  pars->results->freq->pmlun=pmlun;
-  pars->results->freq->pEMun=pEMun;
-  pars->results->freq->pmlSNP=pmlSNP;
-  pars->results->freq->pEMSNP=pEMSNP;
-  pars->results->freq->pmlunSNP=pmlunSNP;
-  pars->results->freq->pEMunSNP=pEMunSNP;
+  freq->pml=pml;
+  freq->pEM=pEM;
+  freq->pmlun=pmlun;
+  freq->pEMun=pEMun;
+  freq->pmlSNP=pmlSNP;
+  freq->pEMSNP=pEMSNP;
+  freq->pmlunSNP=pmlunSNP;
+  freq->pEMunSNP=pEMunSNP;
 
   if(inputIsBeagle!=1){
     for(int i=0;i<pars->numSites;i++)
@@ -638,8 +695,8 @@ void frequency::likeFreq(funkyPars *pars){//method=1: bfgs_known ;method=2 em;me
       lrt_snp[s]=pmlSNP[s];
   }
 
-  pars->results->asso->freq=returnFreq;
-  pars->results->asso->lrt_snp = lrt_snp;//thorfinn add 16april 2012
+  freq->freq=returnFreq;
+  freq->lrt_snp = lrt_snp;//thorfinn add 16april 2012
 
 }
 
@@ -654,26 +711,21 @@ double frequency::likeFixedMinor_bfgs(double *loglikes,int numInds){
   double ubound[1] = {1};
   int lims[1] = {2};
 
-
   double res=findmax_bfgs(1,start,bv,&likeFixedMinor_wrapper,NULL,lbound,ubound,lims,-1);
-  //fprintf(stderr,"%s\t like %f isoptim is: %f\n",__FUNCTION__,res,start[0]);	
+
   delete bv;
   return start[0];
 
 }
 ///* unstaticing when possible
 double frequency::likeFixedMinor_wrapper(const double *para,const void *dats){
-
   bfgs_vars *bf =(bfgs_vars *) dats;
   double *loglikes = bf->loglikes;
   int numInds = bf->numInds;
   //  double *indF = bf->indF;
-
   double res = likeFixedMinor(para[0],loglikes,numInds);
-
   return res;
 }
-//*/
 
 
 
@@ -687,10 +739,10 @@ double frequency::emFrequencyNoFixed(double *loglike,int numInds, int iter,doubl
       n++;
     }
   }
-    
+
   double **loglikeGeno;
   loglikeGeno =new double*[3];
-  
+
   for(int j=0;j<3;j++){
     loglikeGeno[j] = new double[numInds*3]; 
     for(int i=0;i<numInds;i++){
@@ -699,7 +751,7 @@ double frequency::emFrequencyNoFixed(double *loglike,int numInds, int iter,doubl
       loglikeGeno[j][i*3+2]=loglike[i*10+angsd::majorminor[iMinor[j]][iMinor[j]]];
     }
   }
-  
+
   float W0[3];
   float W1[3];
   float W2[3];
@@ -715,7 +767,7 @@ double frequency::emFrequencyNoFixed(double *loglike,int numInds, int iter,doubl
   float normWeight[3];
   float norm;
   int correctInd;
-  
+
   for(it=0;it<iter;it++){
     for(int j=0;j<3;j++)
       weight[j]=-likeFixedMinor(p,loglikeGeno[j],keepInd);
@@ -733,9 +785,10 @@ double frequency::emFrequencyNoFixed(double *loglike,int numInds, int iter,doubl
 	W2[j]=exp(loglike[i*10+angsd::majorminor[iMinor[j]][iMinor[j]]]) * (pow(p,2) + (1-p)*p*indF[i]);
 	if(W0[j]+W1[j]+W2[j]<0.0000001)
 	  continue;
+	sum+=(W1[j]+2*W2[j])/(2*(W0[j]+W1[j]+W2[j]))*normWeight[j];
       }
     }
-    
+
     p=sum/correctInd;
        
     if((p-temp_p<accu&&temp_p-p<accu)||(p/temp_p<1+accu2&&p/temp_p>1-accu2))
@@ -757,14 +810,15 @@ double frequency::emFrequencyNoFixed(double *loglike,int numInds, int iter,doubl
 	fprintf(stderr,"\n");
       }
       fprintf(stderr,"%f | %f %f %f |%f | %d %d | \n",p, normWeight[0], normWeight[1], normWeight[2],angsd::addProtect3(weight[0],weight[1],weight[2]),major,minor);
+
     }
   }
   
- for(int j=0;j<3;j++)
-   delete[] loglikeGeno[j]; 
- delete[] loglikeGeno;
-
- return(p);
+  for(int j=0;j<3;j++)
+    delete[] loglikeGeno[j]; 
+  delete[] loglikeGeno;
+  
+  return(p);
 }
 
 
@@ -816,8 +870,6 @@ double frequency::likeNoFixedMinor_bfgs(double *loglikes,int numInds,int major){
   double ubound[1] = {1};
   int lims[1] = {2};
   double res=findmax_bfgs(1,start,(void*) &bv,likeNoFixedMinor_wrapper,NULL,lbound,ubound,lims,-1);
-  //fprintf(stderr,"%f\n",res);
-  //fprintf(stderr,"%s\t like %f isoptim is: %f\n",__FUNCTION__,res,start[0]);	
   return start[0];
 }
 
@@ -829,12 +881,8 @@ double frequency::likeFixedMinor(double p,double *logLikes,int numInds){
 				  logLikes[i*3+1] + log(2*(1-p)*p - 2*(1-p)*p*indF[i]),
 				  logLikes[i*3+2] + log(pow(p,2) + (1-p)*p*indF[i]));
   }
-
-  return -totalLike;
+    return -totalLike;
 }
-
-
-
 
 double frequency::emFrequency(double *loglike,int numInds, int iter,double start,int *keep,int keepInd){
 
@@ -886,7 +934,7 @@ double frequency::emFrequency(double *loglike,int numInds, int iter,double start
     //print_array(stderr,keep,numInds);
     fprintf(stderr,"used logLike (3*length(keep))=%d\n",keepInd);
 
-    for(int ii=0;0&&ii<numInds;ii++){
+    for(int ii=0;1&&ii<numInds;ii++){
       if(keep!=NULL && keep[ii]==1)
 	    fprintf(stderr,"1\t");
 	for(int gg=0;gg<3;gg++)
@@ -903,11 +951,12 @@ double frequency::emFrequency(double *loglike,int numInds, int iter,double start
       W2=exp(loglike[i*3+2]) * (pow(p,2) + (1-p)*p*indF[i]);
 
       sum+=(W1+2*W2)/(2*(W0+W1+W2));
-      //fprintf(stderr,"p=%f W %f\t%f\t%f sum=%f loglike: %f\n",p,W0,W1,W2,sum,exp(loglike[i*3+2])*pow(1-p,2));
+      fprintf(stderr,"p=%f W %f\t%f\t%f sum=%f loglike: %f\n",p,W0,W1,W2,sum,exp(loglike[i*3+2])*pow(1-p,2));
     }
     p=-999;
-    // exit(0);
+    exit(0);
   }
   
   return(p);
 }
+
